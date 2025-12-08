@@ -76,3 +76,43 @@ flowchart TD
     GA --> L2((Feature Regression)):::purple
     GA --> L4((Decorrelation)):::purple
 ```
+
+# Datasets
+
+To replicate the experiments or run the system, you need to download and prepare the following datasets.
+
+### 1. Entity Linking (AIDA-YAGO2)
+We use the **AIDA-YAGO2** dataset for entity linking training and preparing the candidate sets.
+
+* **Download:** You can download the dataset from the [official AIDA resource page](https://resources.mpi-inf.mpg.de/yago-naga/aida/downloads.html).
+* **Preparation:** Please note that the raw download requires processing. Follow the instructions provided within the downloaded files to generate the consolidated TSV file containing both training and test sets.
+    * **Target Output File:** `AIDA-YAGO2-dataset.tsv`
+
+### 2. Graph Database (YAGO4)
+The underlying graph database is built using **YAGO4**. You will need to download specific files from the **English Wikipedia** section of the [YAGO4 downloads](https://yago-knowledge.org/downloads/yago-4).
+
+We require the following two components:
+
+1.  **Facts:** Facts that are not labels.
+2.  **Labels:** All entity labels (including `rdfs:label`, `rdfs:comment`, and `schema:alternateName`).
+
+Please ensure you download the following specific files:
+
+| Component | Filename |
+| :--- | :--- |
+| **Facts** | `yago-wd-facts.nt.gz` |
+| **Labels** | `yago-wd-labels.nt.gz` |
+
+---
+
+### Graph Data Preparation
+Once the datasets are downloaded, you must prepare the graph data for training and inference. This process involves parsing the raw YAGO files and structuring them for the efficient reading.
+
+To run the preprocessing pipeline, execute the following command:
+
+```bash
+python -m app.main --mode preprocess
+```
+
+The script relies on file paths defined in the configuration. The default configuration file is located at **configs/config.yaml**. You can modify this file to point to your specific download locations.
+

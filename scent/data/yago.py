@@ -157,17 +157,17 @@ def parse_yago_ntx(filepath, is_label_file=False, target_lang='en'):
 
             yield subj, pred, obj
 
-def prepare_yago_data(directory_name):
+def prepare_yago_data(labels_path, facts_path):
     nodes_info = {}
     print("loading labels...")
-    for subj, pred, obj in parse_yago_ntx(os.path.join(directory_name, 'yago-wd-labels.nt.gz'), is_label_file=True):
+    for subj, pred, obj in parse_yago_ntx(labels_path, is_label_file=True):
         
         if subj not in nodes_info: 
             nodes_info[subj] = obj
 
     edges_info = []
     print("loading facts...")
-    for subj, pred, obj in parse_yago_ntx(os.path.join(directory_name, 'yago-wd-facts.nt.gz')):
+    for subj, pred, obj in parse_yago_ntx(facts_path):
         
         if subj in nodes_info and obj in nodes_info:
             edges_info.append((subj, pred, obj))
@@ -190,6 +190,8 @@ def store_graph_as_dataframe(
     df_nodes.to_feather(os.path.join(dataset_dir, node_path))
     df_edges.to_feather(os.path.join(dataset_dir, edge_path))
     df_rels.to_feather(os.path.join(dataset_dir, rel_path))
+
+    return df_nodes, df_edges, df_rels
 
 def load_graph_as_dataframe(
         dataset_dir, 
@@ -227,7 +229,18 @@ def prepare_graph_indices(df_nodes, df_rels):
     return node_to_idx, idx_to_node, rel_to_idx, idx_to_rel
 
 
-def create_orphan_nodes(df_nodes, not_found, dataset_path, node_path):
+def create_orphan_nodes(aida_dataset, df_nodes, node_to_idx, dataset_path, node_path):
+    not_found = {}
+    all_keys = set()
+    for t in aida_dataset:
+        for p in t['annotations']:
+            if 'yago_entity' in p and p['yago_entity']!='--NME--':
+
+                all_keys.add(p['yago_entity'])
+
+                if f'http://yago-knowledge.org/resource/{p['yago_entity']}' not in node_to_idx:
+                    not_found[f'http://yago-knowledge.org/resource/{p['yago_entity']}'] = p['yago_entity'].replace('_',' ')
+
     print(f'current nodes: {len(df_nodes)}')
     df_new = pd.DataFrame(list(not_found.items()), columns=['url', 'name'])
     if len(df_new) != 0:
