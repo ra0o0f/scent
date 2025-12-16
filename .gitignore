@@ -3,6 +3,9 @@
 
 **/datasets/**
 
+# **/notebooks/**
+scent/notebooks/
+
 **/mlruns/**
 
 **/scent_checkpoints**/**

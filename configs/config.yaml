@@ -5,7 +5,50 @@ data:
   yago4_facts_path: 'datasets/yago-wd-facts.nt.gz'
   yago4_labels_path: 'datasets/yago-wd-labels.nt.gz'
 
+  wikidata_path: 'datasets/enwiki_namespace_0.zip'
+
+  shadowlink_path: 'datasets/shadowlink'
+
   node_path: 'graph_yago_nodes.feather'
   edge_path: 'graph_yago_edges.feather'
   rel_path: 'graph_yago_rels.feather'
   pyg_path: 'graph_yago.safetensors'
+
+  graph_yago_wiki_path: 'graph_yago_wiki.feather'
+
+  aida_wikidata_path: 'AIDA-YAGO2-dataset_wikidata.jsonl'
+  shadowlink_wikidata_path: 'Shadowlink_wikidata.jsonl'
+
+  aida_whitening_params_path: 'aida_whitening_params.pt'
+
+model:
+  lm_model_name: 'roberta-base'
+  mask_buffer_len: 25
+  max_seq_len: 512
+
+
+
+train:
+  exp_name: 'train_v1'
+  batch_size: 5
+  num_workers: 1
+  device: cuda
+
+  num_epochs: 3
+  lr: 1e-4
+  wd: 0.01
+  grad_accumulation_steps: 4
+  max_grad_norm: 1.0
+  warmup_ratio: 0.05
+  optimizer_type: 'nonschedulefree'
+  
+  resume_from_checkpoint: ''
+
+eval:
+  device: cuda
+  batch_size: 5
+  num_workers: 1
+  mask_buffer_len: 25
+  max_seq_len: 512
+
+

@@ -2,11 +2,15 @@ import re
 import os
 import gzip
 import csv
+from networkx import to_undirected
 import pandas as pd
+from .wiki import enrich_with_wikidata
 import torch
 from safetensors.torch import load_file, save_file
-from torch_geometric.utils import to_networkx, sort_edge_index
+from torch_geometric.utils import to_undirected, k_hop_subgraph, degree, sort_edge_index
 from torch_geometric.data import Data
+import json
+
 
 def parse_aida_dataset(file_path):
     # train_data = {}
@@ -18,7 +22,7 @@ def parse_aida_dataset(file_path):
 
     all_ids = set()
 
-    with open(file_path, 'r', encoding='utf-8') as f:
+    with open(file_path, "r", encoding="utf-8") as f:
         current_doc_id = None
         current_annotations = []
         current_split = None
@@ -26,11 +30,11 @@ def parse_aida_dataset(file_path):
         for line_num, line in enumerate(f, 1):
             line = line.strip()
 
-            if line.startswith('-DOCSTART-'):
+            if line.startswith("-DOCSTART-"):
                 if current_doc_id is not None:
                     doc_item = {
-                        'id': current_doc_id,
-                        'annotations': current_annotations
+                        "id": current_doc_id,
+                        "annotations": current_annotations,
                     }
 
                     # if current_split == 'train':
@@ -40,65 +44,62 @@ def parse_aida_dataset(file_path):
                     # elif current_split == 'testb':
                     #     testb_data[current_doc_id] = doc_item
 
-                    if current_split == 'train':
+                    if current_split == "train":
                         train_data.append(doc_item)
-                    elif current_split == 'testa':
+                    elif current_split == "testa":
                         testa_data.append(doc_item)
-                    elif current_split == 'testb':
+                    elif current_split == "testb":
                         testb_data.append(doc_item)
 
-                match = re.search(r'\((.*?)\)', line)
+                match = re.search(r"\((.*?)\)", line)
                 if not match:
                     continue
 
-                id_part = match.group(1).split(' ')[0]
+                id_part = match.group(1).split(" ")[0]
 
-                if 'testa' in id_part:
-                    current_split = 'testa'
-                elif 'testb' in id_part:
-                    current_split = 'testb'
+                if "testa" in id_part:
+                    current_split = "testa"
+                elif "testb" in id_part:
+                    current_split = "testb"
                 else:
-                    current_split = 'train'
-                
+                    current_split = "train"
+
                 current_doc_id = id_part
 
                 if current_doc_id in all_ids:
                     raise ValueError(f"duplicate document ID found: {current_doc_id}")
                 all_ids.add(current_doc_id)
-                
+
                 current_annotations = []
-            
+
             elif line and current_doc_id is not None:
-                parts = line.split('\t')
-                
-                token_data = {'token': parts[0]}
+                parts = line.split("\t")
+
+                token_data = {"token": parts[0]}
 
                 if len(parts) >= 4:
-                    token_data['bio_tag'] = parts[1]
-                    token_data['mention'] = parts[2]
-                    if parts[3] != 'null':
+                    token_data["bio_tag"] = parts[1]
+                    token_data["mention"] = parts[2]
+                    if parts[3] != "null":
                         # token_data['yago_entity'] = parts[3]
                         raw_yago = parts[3]
-                        decoded_yago = raw_yago.encode('utf-8').decode('unicode_escape')
-                        token_data['yago_entity'] = decoded_yago
-                
+                        decoded_yago = raw_yago.encode("utf-8").decode("unicode_escape")
+                        token_data["yago_entity"] = decoded_yago
+
                 if len(parts) >= 6:
-                    if parts[4] != 'null':
-                        token_data['wikipedia_url'] = parts[4]
-                    if parts[5] != 'null':
-                        token_data['numeric_id'] = parts[5]
+                    if parts[4] != "null":
+                        token_data["wikipedia_url"] = parts[4]
+                    if parts[5] != "null":
+                        token_data["numeric_id"] = parts[5]
 
                 if len(parts) == 7:
-                    if parts[6] != 'null':
-                        token_data['freebase_mid'] = parts[6]
-                
+                    if parts[6] != "null":
+                        token_data["freebase_mid"] = parts[6]
+
                 current_annotations.append(token_data)
 
         if current_doc_id is not None:
-            doc_item = {
-                'id': current_doc_id,
-                'annotations': current_annotations
-            }
+            doc_item = {"id": current_doc_id, "annotations": current_annotations}
 
             # if current_split == 'train':
             #     train_data[current_doc_id] = doc_item
@@ -107,151 +108,188 @@ def parse_aida_dataset(file_path):
             # elif current_split == 'testb':
             #     testb_data[current_doc_id] = doc_item
 
-            if current_split == 'train':
+            if current_split == "train":
                 train_data.append(doc_item)
-            elif current_split == 'testa':
+            elif current_split == "testa":
                 testa_data.append(doc_item)
-            elif current_split == 'testb':
+            elif current_split == "testb":
                 testb_data.append(doc_item)
-
 
     return train_data, testa_data, testb_data
 
 
-def parse_yago_ntx(filepath, is_label_file=False, target_lang='en'):
+def parse_yago_ntx(filepath, is_label_file=False, target_lang="en"):
 
-    with gzip.open(filepath, 'rt', encoding='utf-8') as f:
-        
-        reader = csv.reader(f, delimiter='\t', quotechar='"', escapechar='\\')
-        
+    with gzip.open(filepath, "rt", encoding="utf-8") as f:
+
+        reader = csv.reader(f, delimiter="\t", quotechar='"', escapechar="\\")
+
         for line in reader:
-            
-            if len(line) < 3: continue
+
+            if len(line) < 3:
+                continue
 
             subj, pred, obj = line[0], line[1], line[2]
 
-            subj = subj.strip('<>')
-            pred = pred.strip('<>')
-            
-            if subj.startswith('<<'): continue
+            subj = subj.strip("<>")
+            pred = pred.strip("<>")
+
+            if subj.startswith("<<"):
+                continue
 
             if is_label_file:
-                
-                if 'label' not in pred and 'name' not in pred:
+
+                if "label" not in pred and "name" not in pred:
                     continue
-                
-                if '@' in obj:
-                    text_part, lang_part = obj.rsplit('@', 1)
-                    
+
+                if "@" in obj:
+                    text_part, lang_part = obj.rsplit("@", 1)
+
                     if target_lang and lang_part != target_lang:
                         continue
-                        
+
                     obj = text_part
                 else:
                     pass
 
                 obj = obj.strip('"')
 
-            elif obj.startswith('<'):
-                 obj = obj.strip('<>')
+            elif obj.startswith("<"):
+                obj = obj.strip("<>")
 
             yield subj, pred, obj
+
 
 def prepare_yago_data(labels_path, facts_path):
     nodes_info = {}
     print("loading labels...")
     for subj, pred, obj in parse_yago_ntx(labels_path, is_label_file=True):
-        
-        if subj not in nodes_info: 
+
+        if subj not in nodes_info:
             nodes_info[subj] = obj
 
     edges_info = []
     print("loading facts...")
     for subj, pred, obj in parse_yago_ntx(facts_path):
-        
+
         if subj in nodes_info and obj in nodes_info:
             edges_info.append((subj, pred, obj))
 
     return nodes_info, edges_info
 
+
 def store_graph_as_dataframe(
-        nodes_info, 
-        edges_info, 
-        dataset_dir, 
-        node_path, 
-        edge_path,
-        rel_path
-    ):
-    df_nodes = pd.DataFrame(list(nodes_info.items()), columns=['url', 'name'])
-    df_edges = pd.DataFrame(edges_info, columns=['subject', 'predicate', 'object'])
-    df_nodes = df_nodes.sort_values('url').reset_index(drop=True)
-    unique_rels = sorted(df_edges['predicate'].unique())
-    df_rels = pd.DataFrame(unique_rels, columns=['predicate'])
+    nodes_info, edges_info, dataset_dir, node_path, edge_path, rel_path
+):
+    df_nodes = pd.DataFrame(list(nodes_info.items()), columns=["url", "name"])
+    df_edges = pd.DataFrame(edges_info, columns=["subject", "predicate", "object"])
+    df_nodes = df_nodes.sort_values("url").reset_index(drop=True)
+    unique_rels = sorted(df_edges["predicate"].unique())
+    df_rels = pd.DataFrame(unique_rels, columns=["predicate"])
     df_nodes.to_feather(os.path.join(dataset_dir, node_path))
     df_edges.to_feather(os.path.join(dataset_dir, edge_path))
     df_rels.to_feather(os.path.join(dataset_dir, rel_path))
 
     return df_nodes, df_edges, df_rels
 
-def load_graph_as_dataframe(
-        dataset_dir, 
-        node_path, 
-        edge_path,
-        rel_path
-    ):
+
+def load_graph_as_dataframe(dataset_dir, node_path, edge_path, rel_path):
     df_nodes = pd.read_feather(os.path.join(dataset_dir, node_path))
     df_edges = pd.read_feather(os.path.join(dataset_dir, edge_path))
     df_rels = pd.read_feather(os.path.join(dataset_dir, rel_path))
 
     return df_nodes, df_edges, df_rels
 
+
 def node_name(idx_to_node, n_id):
-    return idx_to_node[n_id].split('/')[-1]
+    return idx_to_node[n_id].split("/")[-1]
+
 
 def edge_name(idx_to_rel, e_id):
-    return idx_to_rel[e_id].split('/')[-1]
+    return idx_to_rel[e_id].split("/")[-1]
+
 
 def prepare_graph_indices(df_nodes, df_rels):
-    idx_to_node = df_nodes['url'].values 
-    
-    node_to_idx = pd.Series(
-        data=df_nodes.index, 
-        index=df_nodes['url']
-    ).to_dict()
-    
-    idx_to_rel = df_rels['predicate'].values
-    
-    rel_to_idx = pd.Series(
-        data=df_rels.index, 
-        index=df_rels['predicate']
-    ).to_dict()
+    idx_to_node = df_nodes["url"].values
+
+    node_to_idx = pd.Series(data=df_nodes.index, index=df_nodes["url"]).to_dict()
+
+    idx_to_rel = df_rels["predicate"].values
+
+    rel_to_idx = pd.Series(data=df_rels.index, index=df_rels["predicate"]).to_dict()
 
     return node_to_idx, idx_to_node, rel_to_idx, idx_to_rel
 
 
-def create_orphan_nodes(aida_dataset, df_nodes, node_to_idx, dataset_path, node_path):
+def aida_post_process(
+    train_set,
+    testa_set,
+    testb_set,
+    df_nodes,
+    node_to_idx,
+    dataset_path,
+    node_path,
+    wikidata_path,
+    aida_wikidata_path,
+):
+
+    aida_dataset = train_set + testa_set + testb_set
+
+    wiki_data = {}
+
     not_found = {}
-    all_keys = set()
     for t in aida_dataset:
-        for p in t['annotations']:
-            if 'yago_entity' in p and p['yago_entity']!='--NME--':
+        for p in t["annotations"]:
+            if "yago_entity" in p and p["yago_entity"] != "--NME--":
 
-                all_keys.add(p['yago_entity'])
+                yago_id = f"http://yago-knowledge.org/resource/{p['yago_entity']}"
+                numeric_id = p["numeric_id"]
 
-                if f'http://yago-knowledge.org/resource/{p['yago_entity']}' not in node_to_idx:
-                    not_found[f'http://yago-knowledge.org/resource/{p['yago_entity']}'] = p['yago_entity'].replace('_',' ')
+                if yago_id not in node_to_idx:
+                    not_found[yago_id] = p["yago_entity"].replace("_", " ")
 
-    print(f'current nodes: {len(df_nodes)}')
-    df_new = pd.DataFrame(list(not_found.items()), columns=['url', 'name'])
-    if len(df_new) != 0:
-        df_nodes = pd.concat([df_nodes, df_new])
-        df_nodes = df_nodes.sort_values('url').reset_index(drop=True)
-        df_nodes.to_feather(os.path.join(dataset_path, node_path))
-    print(f'updated nodes: {len(df_nodes)}')
+                if numeric_id not in wiki_data:
+                    wiki_data[numeric_id] = {
+                        "numeric_id": numeric_id,
+                        "yago_id": yago_id,
+                        "name": p["yago_entity"].replace("_", " "),
+                    }
+
+    df_nodes = create_orphan_nodes(
+        not_found=not_found,
+        df_nodes=df_nodes,
+        dataset_path=dataset_path,
+        node_path=node_path,
+    )
+
+    print("Preparing wikidata for AIDA..")
+    enrich_with_wikidata(wiki_data=wiki_data, wikidata_path=wikidata_path)
+
+    with open(
+        os.path.join(dataset_path, aida_wikidata_path), "w", encoding="utf-8"
+    ) as f:
+        for item in wiki_data.values():
+            f.write(json.dumps(item) + "\n")
+
     return df_nodes
 
+
+def create_orphan_nodes(not_found, df_nodes, dataset_path, node_path):
+
+    print(f"current nodes: {len(df_nodes)}")
+    df_new = pd.DataFrame(list(not_found.items()), columns=["url", "name"])
+    if len(df_new) != 0:
+        df_nodes = pd.concat([df_nodes, df_new])
+        df_nodes = df_nodes.sort_values("url").reset_index(drop=True)
+        df_nodes.to_feather(os.path.join(dataset_path, node_path))
+    print(f"updated nodes: {len(df_nodes)}")
+    return df_nodes
+
+
 def store_pyg_tensors(df_nodes, df_edges, df_rels, dataset_dir, pyg_path):
-    node_to_idx, idx_to_node, rel_to_idx, idx_to_rel = prepare_graph_indices(df_nodes, df_rels)
+    node_to_idx, idx_to_node, rel_to_idx, idx_to_rel = prepare_graph_indices(
+        df_nodes, df_rels
+    )
 
     src_list = []
     dst_list = []
@@ -265,30 +303,68 @@ def store_pyg_tensors(df_nodes, df_edges, df_rels, dataset_dir, pyg_path):
     edge_index = torch.tensor([src_list, dst_list], dtype=torch.long)
     edge_type = torch.tensor(edge_type_list, dtype=torch.long)
 
-    pyg_tensors = {
-        "edge_index": edge_index,
-        "edge_type": edge_type
-    }
+    pyg_tensors = {"edge_index": edge_index, "edge_type": edge_type}
 
     save_file(pyg_tensors, os.path.join(dataset_dir, pyg_path))
 
-def load_pyg_data(pyg_tensors, df_nodes):
+
+def load_pyg_data(dataset_dir, pyg_path, df_nodes):
+
+    pyg_tensors = load_file(os.path.join(dataset_dir, pyg_path))
 
     num_nodes = len(df_nodes)
 
     data = Data(
         edge_index=pyg_tensors["edge_index"],
         edge_attr=pyg_tensors["edge_type"],
-        num_nodes=num_nodes
+        num_nodes=num_nodes,
     )
 
     if data.edge_index is not None:
         data.edge_index, data.edge_attr = sort_edge_index(
-            data.edge_index, 
-            data.edge_attr, 
-            sort_by_row=True
+            data.edge_index, data.edge_attr, sort_by_row=True
         )
 
     data.validate(raise_on_error=True)
 
     return data
+
+
+def postproces_pyg_data(pyg_data):
+    pyg_data.edge_index, pyg_data.edge_attr = to_undirected(
+        pyg_data.edge_index,
+        pyg_data.edge_attr,
+        num_nodes=pyg_data.num_nodes,
+        reduce="max",  # if reverse edge already exists, this will choose higher edge index
+    )
+
+    row, col = pyg_data.edge_index
+    node_degrees = degree(col, pyg_data.num_nodes)
+    pyg_data.edge_degree_weight = node_degrees[row].float()
+    pyg_data.edge_degree_weights_squared = node_degrees[row].float().pow(2.0)
+
+
+# def get_aida_textual_content(train_set, aida_wikidata):
+#     aida_contents = {}
+#     for t in train_set:
+#         for p in t["annotations"]:
+#             if "yago_entity" in p and p["yago_entity"] != "--NME--":
+
+#                 content = {"numeric_id": p["numeric_id"]}
+
+#                 numeric_id = p["numeric_id"]
+
+#                 if (
+#                     numeric_id in aida_wikidata
+#                     and "short_abstract" in aida_wikidata[numeric_id]
+#                 ):
+#                     content["name"] = aida_wikidata[numeric_id]["name"]
+#                     content["short_abstract"] = aida_wikidata[numeric_id][
+#                         "short_abstract"
+#                     ]
+#                 else:
+#                     content["name"] = p["yago_entity"].replace("_", " ")
+
+#                 aida_contents[numeric_id] = content
+
+#     return aida_contents
